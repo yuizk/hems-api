@@ -1,5 +1,7 @@
 # HEMS API
 
+[English](README.md) | [日本語](README.ja.md)
+
 Flask API and Home Assistant integration for Toyota Home / DENSO Smart Airs
 air conditioning and the associated HEMS controller web UI, including supported
 door locks and shutters. This is an unofficial community project; compatibility
