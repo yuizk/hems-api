@@ -1,0 +1,20 @@
+name: Chrome smoke
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 20 * * 0'
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh build with current Stable Chrome
+        run: docker build --no-cache -t hems-api:chrome-smoke .
+      - name: Offline real Chrome smoke
+        run: scripts/smoke-image.sh hems-api:chrome-smoke

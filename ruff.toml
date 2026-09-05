@@ -1,0 +1,3 @@
+# Keep the accepted HEMS API lint contract stable across Ruff releases.
+[lint]
+select = ["E4", "E7", "E9", "F"]

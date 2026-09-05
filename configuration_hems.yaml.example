@@ -1,0 +1,372 @@
+# Home Assistant Configuration for HEMS Integration (MQTT Bridge Version)
+# Replaces broken Template Climate with MQTT Climate Bridge.
+
+sensor:
+  # Floor 1 Status (Source of Truth)
+  - platform: rest
+    name: "HEMS Aircon 1F Status"
+    resource: "http://hems-api.example.invalid:5000/status?floor=1"
+    scan_interval: 60
+    timeout: 10
+    headers:
+      X-API-Key: !secret hems_api_key_read
+    json_attributes:
+      - floor
+      - mode
+      - temperature
+      - power
+    value_template: "{{ value_json.power }}"
+
+  # Floor 2 Status (Source of Truth)
+  - platform: rest
+    name: "HEMS Aircon 2F Status"
+    resource: "http://hems-api.example.invalid:5000/status?floor=2"
+    scan_interval: 60
+    timeout: 10
+    headers:
+      X-API-Key: !secret hems_api_key_read
+    json_attributes:
+      - floor
+      - mode
+      - temperature
+      - power
+    value_template: "{{ value_json.power }}"
+
+  # Security Status (Lock & Shutter)
+  - platform: rest
+    name: "HEMS Security Status"
+    resource: "http://hems-api.example.invalid:5000/security/status"
+    scan_interval: 60
+    timeout: 10
+    headers:
+      X-API-Key: !secret hems_api_key_read
+    json_attributes:
+      - lock
+      - lock_raw
+      - shutter
+      - shutter_open_class
+      - shutter_close_class
+    value_template: "{{ value_json.lock }}"
+
+rest_command:
+  hems_control:
+    url: "http://hems-api.example.invalid:5000/control"
+    method: POST
+    timeout: 30
+    headers:
+      content-type: application/json
+      X-API-Key: !secret hems_api_key_control
+    payload: >
+      {
+        {% if floor is defined %}"floor": {{ floor }},{% endif %}
+        {% if mode is defined and mode %}"mode": "{{ mode }}",{% endif %}
+        {% if temp is defined %}"temp": {{ temp }},{% endif %}
+        {% if power is defined %}"power": "{{ power }}"{% endif %}
+      }
+
+  hems_lock_control:
+    url: "http://hems-api.example.invalid:5000/security/lock"
+    method: POST
+    timeout: 30
+    headers:
+      content-type: application/json
+      X-API-Key: !secret hems_api_key_control
+    payload: '{"action": "{{ action }}"}'
+
+  hems_shutter_control:
+    url: "http://hems-api.example.invalid:5000/security/shutter"
+    method: POST
+    timeout: 30
+    headers:
+      content-type: application/json
+      X-API-Key: !secret hems_api_key_control
+    payload: '{"action": "{{ action }}"}'
+
+mqtt:
+  climate:
+    - name: "HEMS AC 1F"
+      unique_id: "hems_ac_1f_mqtt"
+      optimistic: false
+      modes: ["off", "heat", "cool", "dry", "fan_only", "auto"]
+      mode_command_topic: "hems/1f/mode/set"
+      mode_state_topic: "hems/1f/mode/state"
+      temperature_command_topic: "hems/1f/temp/set"
+      temperature_state_topic: "hems/1f/temp/state"
+      min_temp: 17
+      max_temp: 30
+      temp_step: 1
+      precision: 1.0
+
+    - name: "HEMS AC 2F"
+      unique_id: "hems_ac_2f_mqtt"
+      optimistic: false
+      modes: ["off", "heat", "cool", "dry", "fan_only", "auto"]
+      mode_command_topic: "hems/2f/mode/set"
+      mode_state_topic: "hems/2f/mode/state"
+      temperature_command_topic: "hems/2f/temp/set"
+      temperature_state_topic: "hems/2f/temp/state"
+      min_temp: 17
+      max_temp: 30
+      temp_step: 1
+      precision: 1.0
+
+  lock:
+    - name: "HEMS Front Door"
+      unique_id: "hems_front_door_lock"
+      command_topic: "hems/security/lock/set"
+      state_topic: "hems/security/lock/state"
+      payload_lock: "LOCK"
+      payload_unlock: "UNLOCK"
+      state_locked: "LOCKED"
+      state_unlocked: "UNLOCKED"
+      optimistic: false
+
+  cover:
+    - name: "HEMS Living Shutter"
+      unique_id: "hems_living_shutter"
+      command_topic: "hems/security/shutter/set"
+      state_topic: "hems/security/shutter/state"
+      state_open: "OPEN"
+      state_closed: "CLOSED"
+      payload_open: "OPEN"
+      payload_close: "CLOSE"
+
+automation:
+  # =========================================
+  # 1F Bridge Automations
+  # =========================================
+  
+  # 1. Sync Sensor (REST) -> MQTT State
+  - alias: "HEMS 1F: Sync Status to MQTT"
+    trigger:
+      - platform: state
+        entity_id: sensor.hems_aircon_1f_status
+      - platform: homeassistant
+        event: start
+    action:
+      # OFFはmode/tempが欠落していても、正しいfloor/powerならoffをretainする。
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hems_aircon_1f_status') not in ['unknown', 'unavailable']
+             and state_attr('sensor.hems_aircon_1f_status', 'floor') == 1
+             and state_attr('sensor.hems_aircon_1f_status', 'power') in ['ON', 'OFF']
+             and (state_attr('sensor.hems_aircon_1f_status', 'power') == 'OFF'
+                  or state_attr('sensor.hems_aircon_1f_status', 'mode') in ['暖房', '冷房', '除湿', '自動', '送風']) }}
+      # Publish Mode/Power State
+      - service: mqtt.publish
+        data:
+          topic: "hems/1f/mode/state"
+          retain: true
+          payload: >
+            {% if state_attr('sensor.hems_aircon_1f_status', 'power') == 'OFF' %}off
+            {% elif state_attr('sensor.hems_aircon_1f_status', 'mode') == '暖房' %}heat
+            {% elif state_attr('sensor.hems_aircon_1f_status', 'mode') == '冷房' %}cool
+            {% elif state_attr('sensor.hems_aircon_1f_status', 'mode') == '除湿' %}dry
+            {% elif state_attr('sensor.hems_aircon_1f_status', 'mode') == '送風' %}fan_only
+            {% elif state_attr('sensor.hems_aircon_1f_status', 'mode') == '自動' %}auto
+            {% else %}off
+            {% endif %}
+      # Publish Temperature State
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hems_aircon_1f_status') not in ['unknown', 'unavailable']
+             and state_attr('sensor.hems_aircon_1f_status', 'floor') == 1
+             and state_attr('sensor.hems_aircon_1f_status', 'power') == 'ON'
+             and state_attr('sensor.hems_aircon_1f_status', 'mode') in ['暖房', '冷房', '自動']
+             and is_number(state_attr('sensor.hems_aircon_1f_status', 'temperature')) }}
+      - service: mqtt.publish
+        data:
+          topic: "hems/1f/temp/state"
+          retain: true
+          payload: "{{ state_attr('sensor.hems_aircon_1f_status', 'temperature') }}"
+
+  # 2. MQTT Command -> REST API (Mode/Power)
+  - alias: "HEMS 1F: Handle Mode Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/1f/mode/set"
+    action:
+      - service: rest_command.hems_control
+        continue_on_error: true
+        data:
+          floor: 1
+          mode: >
+            {% if trigger.payload == 'heat' %}暖房
+            {% elif trigger.payload == 'cool' %}冷房
+            {% elif trigger.payload == 'dry' %}除湿
+            {% elif trigger.payload == 'fan_only' %}送風
+            {% elif trigger.payload == 'auto' %}自動
+            {% endif %}
+          power: "{{ 'OFF' if trigger.payload == 'off' else 'ON' }}"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_aircon_1f_status
+
+  # 3. MQTT Command -> REST API (Temperature)
+  - alias: "HEMS 1F: Handle Temp Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/1f/temp/set"
+    action:
+      - service: rest_command.hems_control
+        continue_on_error: true
+        data:
+          floor: 1
+          temp: "{{ trigger.payload }}"
+          power: "ON"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_aircon_1f_status
+
+  # =========================================
+  # 2F Bridge Automations
+  # =========================================
+
+  # 1. Sync Sensor (REST) -> MQTT State
+  - alias: "HEMS 2F: Sync Status to MQTT"
+    trigger:
+      - platform: state
+        entity_id: sensor.hems_aircon_2f_status
+      - platform: homeassistant
+        event: start
+    action:
+      # OFFはmode/tempが欠落していても、正しいfloor/powerならoffをretainする。
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hems_aircon_2f_status') not in ['unknown', 'unavailable']
+             and state_attr('sensor.hems_aircon_2f_status', 'floor') == 2
+             and state_attr('sensor.hems_aircon_2f_status', 'power') in ['ON', 'OFF']
+             and (state_attr('sensor.hems_aircon_2f_status', 'power') == 'OFF'
+                  or state_attr('sensor.hems_aircon_2f_status', 'mode') in ['暖房', '冷房', '除湿', '自動', '送風']) }}
+      # Publish Mode/Power State
+      - service: mqtt.publish
+        data:
+          topic: "hems/2f/mode/state"
+          retain: true
+          payload: >
+            {% if state_attr('sensor.hems_aircon_2f_status', 'power') == 'OFF' %}off
+            {% elif state_attr('sensor.hems_aircon_2f_status', 'mode') == '暖房' %}heat
+            {% elif state_attr('sensor.hems_aircon_2f_status', 'mode') == '冷房' %}cool
+            {% elif state_attr('sensor.hems_aircon_2f_status', 'mode') == '除湿' %}dry
+            {% elif state_attr('sensor.hems_aircon_2f_status', 'mode') == '送風' %}fan_only
+            {% elif state_attr('sensor.hems_aircon_2f_status', 'mode') == '自動' %}auto
+            {% else %}off
+            {% endif %}
+      # Publish Temperature State
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hems_aircon_2f_status') not in ['unknown', 'unavailable']
+             and state_attr('sensor.hems_aircon_2f_status', 'floor') == 2
+             and state_attr('sensor.hems_aircon_2f_status', 'power') == 'ON'
+             and state_attr('sensor.hems_aircon_2f_status', 'mode') in ['暖房', '冷房', '自動']
+             and is_number(state_attr('sensor.hems_aircon_2f_status', 'temperature')) }}
+      - service: mqtt.publish
+        data:
+          topic: "hems/2f/temp/state"
+          retain: true
+          payload: "{{ state_attr('sensor.hems_aircon_2f_status', 'temperature') }}"
+
+  # 2. MQTT Command -> REST API (Mode/Power)
+  - alias: "HEMS 2F: Handle Mode Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/2f/mode/set"
+    action:
+      - service: rest_command.hems_control
+        continue_on_error: true
+        data:
+          floor: 2
+          mode: >
+            {% if trigger.payload == 'heat' %}暖房
+            {% elif trigger.payload == 'cool' %}冷房
+            {% elif trigger.payload == 'dry' %}除湿
+            {% elif trigger.payload == 'fan_only' %}送風
+            {% elif trigger.payload == 'auto' %}自動
+            {% endif %}
+          power: "{{ 'OFF' if trigger.payload == 'off' else 'ON' }}"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_aircon_2f_status
+
+  # 3. MQTT Command -> REST API (Temperature)
+  - alias: "HEMS 2F: Handle Temp Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/2f/temp/set"
+    action:
+      - service: rest_command.hems_control
+        continue_on_error: true
+        data:
+          floor: 2
+          temp: "{{ trigger.payload }}"
+          power: "ON"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_aircon_2f_status
+
+  # =========================================
+  # Security (Lock & Shutter) Bridge
+  # =========================================
+
+  # 1. Sync Security Sensor (REST) -> MQTT State
+  - alias: "HEMS Security: Sync Status to MQTT"
+    trigger:
+      - platform: state
+        entity_id: sensor.hems_security_status
+      - platform: homeassistant
+        event: start
+    # 不明値や未対応値は、retainedなUNKNOWN/Noneで有効状態を上書きしない。
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.hems_security_status') not in ['unknown', 'unavailable']
+             and state_attr('sensor.hems_security_status', 'lock') in ['LOCKED', 'UNLOCKED']
+             and state_attr('sensor.hems_security_status', 'shutter') in ['OPEN', 'CLOSED'] }}
+    action:
+      # Lock Status
+      - service: mqtt.publish
+        data:
+          topic: "hems/security/lock/state"
+          retain: true
+          payload: >
+            {% if state_attr('sensor.hems_security_status', 'lock') == 'LOCKED' %}LOCKED
+            {% elif state_attr('sensor.hems_security_status', 'lock') == 'UNLOCKED' %}UNLOCKED
+            {% endif %}
+
+      # Shutter Status
+      - service: mqtt.publish
+        data:
+          topic: "hems/security/shutter/state"
+          retain: true
+          payload: "{{ state_attr('sensor.hems_security_status', 'shutter') }}"
+      
+  # 2. MQTT Lock Command -> REST API
+  - alias: "HEMS Security: Handle Lock Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/security/lock/set"
+    action:
+      - service: rest_command.hems_lock_control
+        data:
+          action: >
+            {% if trigger.payload == 'LOCK' %}lock
+            {% elif trigger.payload == 'UNLOCK' %}unlock
+            {% endif %}
+      - delay: "00:00:05"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_security_status
+
+  # 3. MQTT Shutter Command -> REST API
+  - alias: "HEMS Security: Handle Shutter Command"
+    trigger:
+      - platform: mqtt
+        topic: "hems/security/shutter/set"
+    action:
+      - service: rest_command.hems_shutter_control
+        data:
+          action: >
+            {% if trigger.payload == 'OPEN' %}open
+            {% elif trigger.payload == 'CLOSE' %}close
+            {% elif trigger.payload == 'STOP' %}
+             # HEMS might not support stop, map to nothing or special handling
+            {% endif %}
+      - delay: "00:00:05"
+      - service: homeassistant.update_entity
+        entity_id: sensor.hems_security_status
+
