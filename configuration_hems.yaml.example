@@ -135,7 +135,7 @@ automation:
   # =========================================
   # 1F Bridge Automations
   # =========================================
-  
+
   # 1. Sync Sensor (REST) -> MQTT State
   - alias: "HEMS 1F: Sync Status to MQTT"
     trigger:
@@ -335,7 +335,7 @@ automation:
           topic: "hems/security/shutter/state"
           retain: true
           payload: "{{ state_attr('sensor.hems_security_status', 'shutter') }}"
-      
+
   # 2. MQTT Lock Command -> REST API
   - alias: "HEMS Security: Handle Lock Command"
     trigger:
@@ -369,4 +369,3 @@ automation:
       - delay: "00:00:05"
       - service: homeassistant.update_entity
         entity_id: sensor.hems_security_status
-
